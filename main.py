@@ -6,7 +6,10 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 
 TOKEN = '8948110705:AAGnc6Rh_JClbxGBI32dUMx1dpVVP-64r7c'
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s', level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -17,16 +20,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def procesar_censo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     documento = update.message.document
-    if not documento.file_name.endswith(('.xlsx', '.xls')):
+    if not documento or not documento.file_name.endswith(('.xlsx', '.xls')):
         await update.message.reply_text("❌ Por favor envía un archivo de Excel válido (.xlsx).")
         return
 
     await update.message.reply_text("⏳ Analizando el censo hospitalario...")
 
-    file = await context.bot.get_file(documento.file_id)
-    file_bytes = await file.download_as_bytearray()
-    
     try:
+        file = await context.bot.get_file(documento.file_id)
+        file_bytes = await file.download_as_bytearray()
+        
         df = pd.read_excel(io.BytesIO(file_bytes), sheet_name='CENSO DIARIO')
         
         def clasificar(row):
@@ -61,8 +64,11 @@ async def procesar_censo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"⚠️ Ocurrió un error al procesar la hoja de Excel: {str(e)}")
 
-if __name__ == '__main__':
+def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler('start', start))
     app.add_handler(MessageHandler(filters.Document.ALL, procesar_censo))
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == '__main__':
+    main()
