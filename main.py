@@ -30,6 +30,7 @@ async def procesar_censo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await context.bot.get_file(documento.file_id)
         file_bytes = await file.download_as_bytearray()
         
+        # Lee la primera hoja automáticamente
         df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=0)
         
         def clasificar(row):
@@ -44,20 +45,24 @@ async def procesar_censo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         total = len(df)
         num_criticos = len(criticos)
-        valor_total = df['VALOR'].sum()
+        valor_total = df['VALOR'].sum() if 'VALOR' in df.columns else 0
         
         msg = f"📊 *RESUMEN DE AUDITORÍA DIARIA*\n\n"
         msg += f"• *Total Censo:* {total} pacientes\n"
         msg += f"• *Casos Críticos (🔴):* {num_criticos}\n"
-        msg += f"• *Monto Expuesto:* ${valor_total:,.0f}\n\n"
-        msg += "🔴 *DETALLE DE PACIENTES CRÍTICOS:*\n"
+        if valor_total > 0:
+            msg += f"• *Monto Expuesto:* ${valor_total:,.0f}\n"
+        msg += f"\n🔴 *TOP PACIENTES CRÍTICOS:* (Mostrando primeros 10)\n"
         
-        for idx, row in criticos.head(15).iterrows():
+        # Limitamos a 10 para que nunca exceda el tamaño permitido por Telegram
+        for idx, row in criticos.head(10).iterrows():
             aut = "⚠️ SIN AUTORIZACIÓN" if pd.isna(row['NUMERO AUTORIZACIÓN']) else row['NUMERO AUTORIZACIÓN']
-            msg += f"\n• *Cama {row['CAMA']}* - {row['NOMBRE DEL PACIENTE']}\n  Estancia: {row['DIAS TRANSCURRIDOS']} días | Aut: {aut}\n  EPS: {row['ENTIDAD']}\n"
+            msg += f"\n• *Cama {row.get('CAMA', 'N/A')}* - {row.get('NOMBRE DEL PACIENTE', 'N/A')}\n"
+            msg += f"  Estancia: {row.get('DIAS TRANSCURRIDOS', 0)} días | Aut: {aut}\n"
+            msg += f"  EPS: {row.get('ENTIDAD', 'N/A')}\n"
 
-        if len(criticos) > 15:
-            msg += f"\n_...y {len(criticos) - 15} casos críticos más._"
+        if len(criticos) > 10:
+            msg += f"\n_...y {len(criticos) - 10} casos críticos adicionales._"
 
         await update.message.reply_text(msg, parse_mode='Markdown')
 
