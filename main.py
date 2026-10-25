@@ -44,10 +44,13 @@ async def procesar_censo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         col_paciente = next((c for c in df.columns if 'PACIENTE' in c or 'NOMBRE' in c), df.columns[1])
         col_eps = next((c for c in df.columns if 'ENTIDAD' in c or 'EPS' in c), df.columns[2])
 
-        # Normalizar textos para filtros
+        # Normalizar textos para filtros seguros
         df['SRV_LOWER'] = df[col_servicio].astype(str).str.lower() if col_servicio else ''
         df['ESP_LOWER'] = df[col_esp].astype(str).str.lower() if col_esp else ''
         df['DX_LOWER'] = df[col_dx].astype(str).str.lower() if col_dx else ''
+
+        # Asegurar que días sea numérico
+        df[col_dias] = pd.to_numeric(df[col_dias], errors='coerce').fillna(0)
 
         # --- SEPARACIÓN POR SERVICIOS ---
         urgencias = df[df['SRV_LOWER'].str.contains('urgenc', na=False)]
@@ -59,50 +62,55 @@ async def procesar_censo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         hosp_criticos = hosp[hosp[col_dias] >= 8]
         uci_criticos = uci[uci[col_dias] >= 8]
 
-        # 1. Resumen Global
+        # 1. Resumen Global de Alertas
         msg = f"📊 *INFORME EJECUTIVO DE CONCURRENCIA*\n"
         msg += f"🏥 *DIAGNOSTICO ADAX*\n\n"
         msg += f"• *Total Pacientes en Censo:* {total_pacientes}\n\n"
         
         msg += f"🚨 *ALERTAS DE ESTANCIA PROLONGADA:*\n"
-        msg += f"• 🔴 Urgencias ($\\ge 3$ días): *{len(urg_criticos)}* pacientes\n"
-        msg += f"• 🔴 Hospitalización ($\\ge 8$ días): *{len(hosp_criticos)}* pacientes\n"
-        msg += f"• 🔴 UCI ($\\ge 8$ días): *{len(uci_criticos)}* pacientes\n"
+        msg += f"• Urgencias ($\\ge 3$ días): *{len(urg_criticos)}* casos\n"
+        msg += f"• Hospitalización ($\\ge 8$ días): *{len(hosp_criticos)}* casos\n"
+        msg += f"• UCI ($\\ge 8$ días): *{len(uci_criticos)}* casos\n"
 
         await update.message.reply_text(msg, parse_mode='Markdown')
 
-        # 2. Detalle de Urgencias >= 3 días
+        # 2. Detalle Urgencias >= 3 días
         if len(urg_criticos) > 0:
             msg_urg = "🚨 *URGENCIAS $\\ge 3$ DÍAS (Detalle):*\n"
             for _, r in urg_criticos.iterrows():
-                msg_urg += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:22]}\n"
-                msg_urg += f"  Estancia: *{r.get(col_dias,0)} días* | EPS: {r.get(col_eps,'')}\n"
+                msg_urg += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:25]}\n"
+                msg_urg += f"  Estancia: *{int(r.get(col_dias,0))} días* | EPS: {str(r.get(col_eps,''))[:20]}\n"
             await update.message.reply_text(msg_urg, parse_mode='Markdown')
 
-        # 3. Detalle de Hospitalización >= 8 días
+        # 3. Detalle Hospitalización >= 8 días
         if len(hosp_criticos) > 0:
             msg_hosp = "🚨 *HOSPITALIZACIÓN $\\ge 8$ DÍAS (Detalle):*\n"
             for _, r in hosp_criticos.iterrows():
-                msg_hosp += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:22]}\n"
-                msg_hosp += f"  Estancia: *{r.get(col_dias,0)} días* | EPS: {r.get(col_eps,'')}\n"
+                msg_hosp += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:25]}\n"
+                msg_hosp += f"  Estancia: *{int(r.get(col_dias,0))} días* | EPS: {str(r.get(col_eps,''))[:20]}\n"
             await update.message.reply_text(msg_hosp, parse_mode='Markdown')
 
-        # 4. Detalle de UCI >= 8 días
+        # 4. Detalle UCI >= 8 días
         if len(uci_criticos) > 0:
             msg_uci = "🚨 *UCI $\\ge 8$ DÍAS (Detalle):*\n"
             for _, r in uci_criticos.iterrows():
-                msg_uci += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:22]}\n"
-                msg_uci += f"  Estancia: *{r.get(col_dias,0)} días* | EPS: {r.get(col_eps,'')}\n"
+                msg_uci += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:25]}\n"
+                msg_uci += f"  Estancia: *{int(r.get(col_dias,0))} días* | EPS: {str(r.get(col_eps,''))[:20]}\n"
             await update.message.reply_text(msg_uci, parse_mode='Markdown')
 
-        # 5. Top 4 Especialidades (Urgencias y Hospitalización)
-        msg_esp = "🩺 *TOP 4 ESPECIALIDADES CON MÁS PACIENTES:*\n"
-        lista_esp = ['medicina interna', 'ortopedia', 'urología', 'cirugía general']
-        
-        for esp in lista_esp:
-            subset = df[df['ESP_LOWER'].str.contains(esp, na=False)]
+        # 5. Top Especialidades (Urgencias y Hospitalización)
+        msg_esp = "🩺 *CONSOLIDADO POR ESPECIALIDADES:*\n"
+        lista_esp = [
+            ('Medicina Interna', 'interna'),
+            ('Ortopedia', 'ortoped'),
+            ('Urología', 'urolog'),
+            ('Cirugía General', 'cirugi')
+        ]
+
+        for nombre_esp, patron in lista_esp:
+            subset = df[df['ESP_LOWER'].str.contains(patron, na=False)]
             cant = len(subset)
-            msg_esp += f"\n• *{esp.upper()}:* {cant} pacientes"
+            msg_esp += f"\n• *{nombre_esp}:* {cant} pacientes"
             if cant > 0:
                 nombres = ", ".join([str(x)[:15] for x in subset[col_paciente].head(2).values])
                 msg_esp += f" (Ej: {nombres})"
@@ -112,10 +120,12 @@ async def procesar_censo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 6. Principales Diagnósticos en UCI
         if len(uci) > 0 and col_dx:
             top_dx = uci[col_dx].value_counts().head(3)
-            msg_dx = "🧠 *TOP 3 DIAGNOSTICOS / MOTIVOS EN UCI:*\n"
+            msg_dx = "🧠 *TOP 3 DIAGNOSTICOS EN UCI:*\n"
             for dx, cuenta in top_dx.items():
                 msg_dx += f"• {str(dx)[:35]} ({cuenta} pacientes)\n"
             await update.message.reply_text(msg_dx, parse_mode='Markdown')
+        elif len(uci) > 0:
+            await update.message.reply_text("🧠 *UCI:* Hay pacientes en UCI pero no se detectó columna de diagnósticos.", parse_mode='Markdown')
 
     except Exception as e:
         await update.message.reply_text(f"⚠️ Error procesando reporte clínico: {str(e)[:150]}")
