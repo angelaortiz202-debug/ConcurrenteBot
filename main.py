@@ -30,7 +30,7 @@ async def procesar_censo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await context.bot.get_file(documento.file_id)
         file_bytes = await file.download_as_bytearray()
         
-        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name='CENSO DIARIO')
+        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=0)
         
         def clasificar(row):
             sin_aut = pd.isna(row['NUMERO AUTORIZACIÓN']) or str(row['NUMERO AUTORIZACIÓN']).strip() == ''
