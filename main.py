@@ -14,7 +14,7 @@ logging.basicConfig(
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🏥 *Bot de Auditoría Concurrente - DIAGNOSTICO ADAX*\n\n"
-        "¡Hola Angela! Envíame el archivo `.xlsx` del censo diario para procesar las alertas instantáneamente.",
+        "¡Hola Angela! Envíame tu censo en `.xlsx` para generar el informe directivo por servicios y especialidades.",
         parse_mode='Markdown'
     )
 
@@ -24,21 +24,20 @@ async def procesar_censo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Por favor envía un archivo de Excel válido (.xlsx).")
         return
 
-    await update.message.reply_text("⏳ Procesando censo hospitalario completo...")
+    await update.message.reply_text("⏳ Analizando estancias, servicios y especialidades...")
 
     try:
         file = await context.bot.get_file(documento.file_id)
         file_bytes = await file.download_as_bytearray()
         
-        # Lee todo el censo (todas las filas y columnas)
         df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=0)
-        
-        # Limpiar espacios en los nombres de las columnas del Excel
         df.columns = df.columns.str.strip().str.upper()
 
         total_pacientes = len(df)
         
-        # Detección inteligente de columnas clave
+        # Detección inteligente de columnas
+        col_servicio = next((c for c in df.columns if 'SERVICIO' in c or 'UBICACION' in c or 'AREA' in c), None)
+        col_esp = next((c for c in df.columns if 'ESPECIALIDAD' in c or 'MEDICO' in c or 'TRATANTE' in c), None)
         col_aut = next((c for c in df.columns if 'AUTORIZAC' in c), 'NUMERO AUTORIZACIÓN')
         col_dias = next((c for c in df.columns if 'DIAS' in c or 'ESTANCIA' in c), 'DIAS TRANSCURRIDOS')
         col_cama = next((c for c in df.columns if 'CAMA' in c), df.columns[0])
@@ -46,58 +45,83 @@ async def procesar_censo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         col_eps = next((c for c in df.columns if 'ENTIDAD' in c or 'EPS' in c), df.columns[2])
         col_valor = next((c for c in df.columns if 'VALOR' in c or 'COSTO' in c), None)
 
-        def clasificar(row):
-            val_aut = row.get(col_aut, None)
-            sin_aut = pd.isna(val_aut) or str(val_aut).strip() == '' or str(val_aut).strip() == '0'
-            try:
-                dias = float(str(row.get(col_dias, 0)).replace(',', '.'))
-            except:
-                dias = 0
-                
-            if sin_aut or dias >= 5:
-                return 'CRITICO'
-            return 'OK'
+        # Normalizar textos para filtros seguros
+        if col_servicio:
+            df['SRV_LOWER'] = df[col_servicio].astype(str).str.lower()
+        else:
+            df['SRV_LOWER'] = ''
+            
+        if col_esp:
+            df['ESP_LOWER'] = df[col_esp].astype(str).str.lower()
+        else:
+            df['ESP_LOWER'] = ''
 
-        df['ALERTA'] = df.apply(clasificar, axis=1)
-        criticos = df[df['ALERTA'] == 'CRITICO']
-        
-        num_criticos = len(criticos)
+        # --- 1. BLOQUE URGENCIAS >= 3 DÍAS ---
+        urgencias = df[df['SRV_LOWER'].str.contains('urgenc', na=False)]
+        urg_criticos = urgencias[urgencias[col_dias] >= 3]
+
+        # --- 2. BLOQUE HOSPITALIZACIÓN >= 8 DÍAS ---
+        hosp = df[df['SRV_LOWER'].str.contains('hospit', na=False)]
+        hosp_criticos = hosp[hosp[col_dias] >= 8]
+
+        # --- 3. BLOQUE UCI >= 8 DÍAS ---
+        uci = df[df['SRV_LOWER'].str.contains('uci|unidad de cuidado', na=False)]
+        uci_criticos = uci[uci[col_dias] >= 8]
+
         monto_total = df[col_valor].sum() if col_valor and col_valor in df.columns else 0
 
-        # 1. Resumen Ejecutivo Global del Censo Masivo
-        msg = f"📊 *INFORME DE AUDITORÍA CONCURRENTE*\n"
+        # --- CONSTRUCCIÓN DEL REPORTE EJECUTIVO ---
+        msg = f"📊 *TABLERO DE AUDITORÍA CONCURRENTE*\n"
         msg += f"🏥 *DIAGNOSTICO ADAX*\n\n"
-        msg += f"• *Total Pacientes en Censo:* {total_pacientes}\n"
-        msg += f"• *Casos Críticos (Estancia $\\ge$ 5d o Sin Aut):* {num_criticos}\n"
+        msg += f"• *Total Censo:* {total_pacientes} pacientes\n"
         if monto_total > 0:
-            msg += f"• *Monto Financiero Consolidado:* ${monto_total:,.0f}\n"
+            msg += f"• *Monto Financiero Total:* ${monto_total:,.0f}\n\n"
+
+        # Alertas por Servicio
+        msg += f"🚨 *ALERTAS POR TIEMPO DE ESTANCIA:*\n"
+        msg += f"• **Urgencias ($\\ge 3$ días):** {len(urg_criticos)} casos\n"
+        msg += f"• **Hospitalización ($\\ge 8$ días):** {len(hosp_criticos)} casos\n"
+        msg += f"• **UCI ($\\ge 8$ días):** {len(uci_criticos)} casos\n\n"
 
         await update.message.reply_text(msg, parse_mode='Markdown')
 
-        # 2. Detalle de los casos críticos más relevantes
-        if num_criticos > 0:
-            msg_det = f"🔴 *TOP 10 CASOS CRÍTICOS (de {num_criticos} totales):*\n"
-            for idx, row in criticos.head(10).iterrows():
-                cama = row.get(col_cama, 'S/C')
-                paciente = str(row.get(col_paciente, 'SIN NOMBRE'))[:25]
-                dias = row.get(col_dias, 0)
-                eps = str(row.get(col_eps, 'N/A'))[:15]
-                aut_val = row.get(col_aut, 'Sin Aut')
-                aut_txt = "⚠️ SIN AUTORIZACIÓN" if pd.isna(aut_val) or str(aut_val).strip() == '' else f"Aut: {aut_val}"
-                
-                msg_det += f"\n• *Cama {cama}* - {paciente}\n"
-                msg_det += f"  Estancia: {dias} días | {aut_txt}\n"
-                msg_det += f"  EPS: {eps}\n"
+        # --- DETALLE DE URGENCIAS CRÍTICAS (>= 3 días) ---
+        if len(urg_criticos) > 0:
+            msg_urg = "⚠️ *URGENCIAS CON ESTANCIA $\\ge 3$ DÍAS:*\n"
+            for _, r in urg_criticos.head(5).iterrows():
+                msg_urg += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:22]} | Estancia: {r.get(col_dias,0)}d | {r.get(col_eps,'')[:12]}\n"
+            await update.message.reply_text(msg_urg, parse_mode='Markdown')
 
-            if num_criticos > 10:
-                msg_det += f"\n_...y {num_criticos - 10} casos críticos adicionales procesados._"
+        # --- DETALLE DE HOSPITALIZACIÓN CRÍTICA (>= 8 días) ---
+        if len(hosp_criticos) > 0:
+            msg_hosp = "⚠️ *HOSPITALIZACIÓN CON ESTANCIA $\\ge 8$ DÍAS:*\n"
+            for _, r in hosp_criticos.head(5).iterrows():
+                msg_hosp += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:22]} | Estancia: {r.get(col_dias,0)}d | {r.get(col_eps,'')[:12]}\n"
+            await update.message.reply_text(msg_hosp, parse_mode='Markdown')
 
-            await update.message.reply_text(msg_det, parse_mode='Markdown')
-        else:
-            await update.message.reply_text("✅ ¡Excelente! No se registran pacientes críticos bajo los criterios evaluados en todo el censo.", parse_mode='Markdown')
+        # --- 4. DESGLOSE POR ESPECIALIDADES CLAVE ---
+        msg_esp = "🩺 *CONSOLIDADO POR ESPECIALIDADES:*\n"
+        especialidades_objetivo = [
+            ('Medicina Interna', 'interna|medicina interna'),
+            ('Ortopedia', 'ortoped'),
+            ('Urología', 'urolog'),
+            ('Cirugía General', 'cirugia general|cirugía'),
+            ('Medicina General', 'medicina general|general')
+        ]
+
+        for nombre_esp, patron in especialidades_objetivo:
+            subset = df[df['ESP_LOWER'].str.contains(patron, na=False)]
+            cantidad = len(subset)
+            msg_esp.f += f"\n• *{nombre_esp}:* {cantidad} pacientes"
+            if cantidad > 0:
+                # Mostrar breve detalle de los primeros de esta especialidad
+                nombres_resumen = ", ".join([str(x)[:15] for x in subset[col_paciente].head(3).values])
+                msg_esp += f" _(Ej: {nombres_resumen})_"
+
+        await update.message.reply_text(msg_esp, parse_mode='Markdown')
 
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Error procesando la estructura masiva del Excel: {str(e)[:150]}")
+        await update.message.reply_text(f"⚠️ Error procesando indicadores especializados: {str(e)[:150]}")
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
