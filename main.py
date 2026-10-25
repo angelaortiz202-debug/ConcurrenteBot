@@ -14,7 +14,7 @@ logging.basicConfig(
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🏥 *Bot de Auditoría Concurrente - DIAGNOSTICO ADAX*\n\n"
-        "¡Hola Angela! Envíame tu censo en `.xlsx` para generar el informe clínico exacto.",
+        "¡Hola Angela! Envíame tu censo en `.xlsx` para depurar las columnas y calcular las métricas reales.",
         parse_mode='Markdown'
     )
 
@@ -24,108 +24,102 @@ async def procesar_censo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Por favor envía un archivo de Excel válido (.xlsx).")
         return
 
-    await update.message.reply_text("⏳ Analizando censo con nombres de columnas exactos...")
+    await update.message.reply_text("⏳ Leyendo estructura real del Excel...")
 
     try:
         file = await context.bot.get_file(documento.file_id)
         file_bytes = await file.download_as_bytearray()
         
         df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=0)
+        
+        # Guardar nombres originales y limpiar
+        columnas_originales = list(df.columns)
         df.columns = df.columns.str.strip().str.upper()
-
         total_pacientes = len(df)
+
+        # Enviar las columnas detectadas para diagnóstico visual
+        cols_str = ", ".join([str(c) for c in columnas_originales[:10]])
+        await update.message.reply_text(f"🔍 *Columnas detectadas:* {cols_str}", parse_mode='Markdown')
+
+        # Identificar columnas por posición o contenido flexible
+        col_cama = df.columns[0]
+        col_paciente = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+        col_eps = df.columns[2] if len(df.columns) > 2 else df.columns[0]
         
-        # --- BÚSQUEDA EXACTA DE COLUMNAS CLAVE ---
-        col_servicio = next((c for c in df.columns if 'SERVICIO' in c or 'UBICACION' in c or 'AREA' in c), None)
-        col_esp = next((c for c in df.columns if 'ESPECIALIDAD' in c or 'MEDICO' in c or 'TRATANTE' in c), None)
-        col_dx = next((c for c in df.columns if 'DIAGNOSTICO' in c or 'DX' in c or 'PATOLOGIA' in c), None)
+        # Buscar columnas clave buscando coincidencias amplias
+        col_servicio = next((c for c in df.columns if 'SERV' in c or 'UBIC' in c or 'AREA' in c or 'PAST' in c), df.columns[3] if len(df.columns) > 3 else None)
+        col_esp = next((c for c in df.columns if 'ESP' in c or 'MED' in c or 'TRAT' in c), None)
+        col_dias = next((c for c in df.columns if 'DIA' in c or 'EST' in c or 'TRAN' in c), None)
+        col_dx = next((c for c in df.columns if 'DIAG' in c or 'DX' in c or 'PAT' in c), None)
+
+        # Normalizar para filtros
+        df['SRV'] = df[col_servicio].astype(str).str.lower() if col_servicio else ''
+        df['ESP'] = df[col_esp].astype(str).str.lower() if col_esp else ''
         
-        # Buscar columna de días o estancia de forma precisa
-        col_dias = next((c for c in df.columns if 'DIAS' in c or 'ESTANCIA' in c or 'TRANS' in c), None)
-        if not col_dias:
-            col_dias = df.columns[3] # fallback predeterminado si no lo halla
+        if col_dias:
+            df['DIAS_NUM'] = pd.to_numeric(df[col_dias], errors='coerce').fillna(0)
+        else:
+            df['DIAS_NUM'] = 0
 
-        col_cama = next((c for c in df.columns if 'CAMA' in c), df.columns[0])
-        col_paciente = next((c for c in df.columns if 'PACIENTE' in c or 'NOMBRE' in c), df.columns[1])
-        col_eps = next((c for c in df.columns if 'ENTIDAD' in c or 'EPS' in c), df.columns[2])
+        # --- FILTROS DE ESTANCIA ---
+        urgencias = df[df['SRV'].str.contains('urg', na=False)]
+        hosp = df[df['SRV'].str.contains('hosp', na=False)]
+        uci = df[df['SRV'].str.contains('uci', na=False)]
 
-        # Normalizar textos para filtros seguros
-        df['SRV_LOWER'] = df[col_servicio].astype(str).str.lower() if col_servicio else ''
-        df['ESP_LOWER'] = df[col_esp].astype(str).str.lower() if col_esp else ''
-        df['DX_LOWER'] = df[col_dx].astype(str).str.lower() if col_dx else ''
+        urg_criticos = urgencias[urgencias['DIAS_NUM'] >= 3]
+        hosp_criticos = hosp[hosp['DIAS_NUM'] >= 8]
+        uci_criticos = uci[uci['DIAS_NUM'] >= 8]
 
-        # Forzar columna de días a numérica
-        df[col_dias] = pd.to_numeric(df[col_dias], errors='coerce').fillna(0)
-
-        # --- FILTROS POR SERVICIO Y ESTANCIA ---
-        urgencias = df[df['SRV_LOWER'].str.contains('urgenc', na=False)]
-        hosp = df[df['SRV_LOWER'].str.contains('hospit', na=False)]
-        uci = df[df['SRV_LOWER'].str.contains('uci|unidad de cuidado', na=False)]
-
-        urg_criticos = urgencias[urgencias[col_dias] >= 3]
-        hosp_criticos = hosp[hosp[col_dias] >= 8]
-        uci_criticos = uci[uci[col_dias] >= 8]
-
-        # 1. Resumen Global
-        msg = f"📊 *INFORME EJECUTIVO DE CONCURRENCIA*\n"
-        msg += f"🏥 *DIAGNOSTICO ADAX*\n\n"
-        msg += f"• *Total Pacientes en Censo:* {total_pacientes}\n\n"
-        
-        msg += f"🚨 *ALERTAS DE ESTANCIA PROLONGADA:*\n"
-        msg += f"• Urgencias ($\\ge 3$ días): *{len(urg_criticos)}* casos\n"
-        msg += f"• Hospitalización ($\\ge 8$ días): *{len(hosp_criticos)}* casos\n"
-        msg += f"• UCI ($\\ge 8$ días): *{len(uci_criticos)}* casos\n"
+        # 1. Reporte Global
+        msg = f"📊 *INFORME CONCURRENTE ADAX*\n\n"
+        msg += f"• *Total Pacientes:* {total_pacientes}\n"
+        msg += f"• *Urgencias ($\\ge 3$d):* {len(urg_criticos)}\n"
+        msg += f"• *Hospitalización ($\\ge 8$d):* {len(hosp_criticos)}\n"
+        msg += f"• *UCI ($\\ge 8$d):* {len(uci_criticos)}\n"
 
         await update.message.reply_text(msg, parse_mode='Markdown')
 
         # 2. Detalle Urgencias >= 3 días
         if len(urg_criticos) > 0:
-            msg_urg = "🚨 *URGENCIAS $\\ge 3$ DÍAS (Detalle):*\n"
+            msg_u = "🚨 *URGENCIAS $\\ge 3$ DÍAS:*\n"
             for _, r in urg_criticos.iterrows():
-                msg_urg += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:25]}\n"
-                msg_urg += f"  Estancia: *{int(r.get(col_dias,0))} días* | EPS: {str(r.get(col_eps,''))[:20]}\n"
-            await update.message.reply_text(msg_urg, parse_mode='Markdown')
+                msg_u += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:22]} ({int(r.get('DIAS_NUM',0))}d)\n"
+            await update.message.reply_text(msg_u, parse_mode='Markdown')
 
         # 3. Detalle Hospitalización >= 8 días
         if len(hosp_criticos) > 0:
-            msg_hosp = "🚨 *HOSPITALIZACIÓN $\\ge 8$ DÍAS (Detalle):*\n"
+            msg_h = "🚨 *HOSPITALIZACIÓN $\\ge 8$ DÍAS:*\n"
             for _, r in hosp_criticos.iterrows():
-                msg_hosp += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:25]}\n"
-                msg_hosp += f"  Estancia: *{int(r.get(col_dias,0))} días* | EPS: {str(r.get(col_eps,''))[:20]}\n"
-            await update.message.reply_text(msg_hosp, parse_mode='Markdown')
+                msg_h += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:22]} ({int(r.get('DIAS_NUM',0))}d)\n"
+            await update.message.reply_text(msg_h, parse_mode='Markdown')
 
         # 4. Detalle UCI >= 8 días
         if len(uci_criticos) > 0:
-            msg_uci = "🚨 *UCI $\\ge 8$ DÍAS (Detalle):*\n"
+            msg_uc = "🚨 *UCI $\\ge 8$ DÍAS:*\n"
             for _, r in uci_criticos.iterrows():
-                msg_uci += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:25]}\n"
-                msg_uci += f"  Estancia: *{int(r.get(col_dias,0))} días* | EPS: {str(r.get(col_eps,''))[:20]}\n"
-            await update.message.reply_text(msg_uci, parse_mode='Markdown')
+                msg_uc += f"• Cama {r.get(col_cama,'-')} - {str(r.get(col_paciente,''))[:22]} ({int(r.get('DIAS_NUM',0))}d)\n"
+            await update.message.reply_text(msg_uc, parse_mode='Markdown')
 
-        # 5. Consolidado por Especialidades (Leyendo la columna exacta)
-        msg_esp = "🩺 *CONSOLIDADO POR ESPECIALIDADES:*\n"
+        # 5. Especialidades (Conteo real agrupado)
         if col_esp:
-            # Agrupar directamente de la columna de especialidad del Excel para mostrar los totales reales
-            conteo_esp = df[col_esp].dropna().astype(str).str.strip().value_counts().head(5)
-            for esp_nombre, cantidad in conteo_esp.items():
-                msg_esp += f"\n• *{esp_nombre.upper()}:* {cantidad} pacientes"
+            conteo_esp = df[col_esp].dropna().astype(str).str.strip().value_counts().head(4)
+            msg_es = "🩺 *TOP 4 ESPECIALIDADES:*\n"
+            for esp, cant in conteo_esp.items():
+                msg_es += f"• {esp.upper()}: {cant} pacientes\n"
+            await update.message.reply_text(msg_es, parse_mode='Markdown')
         else:
-            msg_esp += "\n⚠️ No se detectó la columna 'ESPECIALIDAD'."
+            await update.message.reply_text("🩺 Columna de especialidad no identificada.", parse_mode='Markdown')
 
-        await update.message.reply_text(msg_esp, parse_mode='Markdown')
-
-        # 6. Principales Diagnósticos en UCI
+        # 6. Diagnósticos en UCI
         if len(uci) > 0 and col_dx:
             top_dx = df.loc[uci.index, col_dx].dropna().astype(str).str.strip().value_counts().head(3)
-            msg_dx = "🧠 *TOP 3 DIAGNOSTICOS EN UCI:*\n"
-            for dx, cuenta in top_dx.items():
-                msg_dx += f"• {dx[:40]} ({cuenta} pacientes)\n"
-            await update.message.reply_text(msg_dx, parse_mode='Markdown')
-        elif len(uci) > 0:
-            await update.message.reply_text("🧠 *UCI:* Hay pacientes en UCI pero no se encontró la columna de diagnóstico.", parse_mode='Markdown')
+            msg_d = "🧠 *TOP 3 DIAGNÓSTICOS UCI:*\n"
+            for dx, cnt in top_dx.items():
+                msg_d += f"• {dx[:35]} ({cnt})\n"
+            await update.message.reply_text(msg_d, parse_mode='Markdown')
 
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Error procesando columnas del censo: {str(e)[:150]}")
+        await update.message.reply_text(f"⚠️ Error: {str(e)[:150]}")
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
